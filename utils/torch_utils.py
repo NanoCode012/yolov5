@@ -185,10 +185,8 @@ class ModelEMA:
         self.updates += 1
         d = self.decay(self.updates)
         with torch.no_grad():
-            if type(model) in (nn.parallel.DataParallel, nn.parallel.DistributedDataParallel):
-                msd, esd = model.module.state_dict(), self.ema.module.state_dict()
-            else:
-                msd, esd = model.state_dict(), self.ema.state_dict()
+            msd = model.module.state_dict() if hasattr(model, 'module') else model.state_dict()
+            esd = self.ema.module.state_dict() if hasattr(self.ema, 'module') else self.ema.state_dict()
 
             for k, v in esd.items():
                 if v.dtype.is_floating_point:
@@ -198,5 +196,6 @@ class ModelEMA:
     def update_attr(self, model):
         # Assign attributes (which may change during training)
         for k in model.__dict__.keys():
-            if not k.startswith('_'):
+            if not k.startswith('_') and not isinstance(getattr(model, k), 
+                (torch.distributed.ProcessGroupNCCL, torch.distributed.Reducer)):
                 setattr(self.ema, k, getattr(model, k))
