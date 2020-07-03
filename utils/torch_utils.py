@@ -54,6 +54,11 @@ def time_synchronized():
     return time.time()
 
 
+def is_parallel(model):
+    # is model is parallel with DP or DDP
+    return type(model) in (nn.parallel.DataParallel, nn.parallel.DistributedDataParallel)
+
+
 def initialize_weights(model):
     for m in model.modules():
         t = type(m)
@@ -111,8 +116,8 @@ def model_info(model, verbose=False):
 
     try:  # FLOPS
         from thop import profile
-        macs, _ = profile(model, inputs=(torch.zeros(1, 3, 480, 640),), verbose=False)
-        fs = ', %.1f GFLOPS' % (macs / 1E9 * 2)
+        flops = profile(deepcopy(model), inputs=(torch.zeros(1, 3, 64, 64),), verbose=False)[0] / 1E9 * 2
+        fs = ', %.1f GFLOPS' % (flops * 100)  # 640x640 FLOPS
     except:
         fs = ''
 
@@ -187,7 +192,6 @@ class ModelEMA:
         with torch.no_grad():
             msd = model.module.state_dict() if hasattr(model, 'module') else model.state_dict()
             esd = self.ema.module.state_dict() if hasattr(self.ema, 'module') else self.ema.state_dict()
-
             for k, v in esd.items():
                 if v.dtype.is_floating_point:
                     v *= d
@@ -196,6 +200,6 @@ class ModelEMA:
     def update_attr(self, model):
         # Assign attributes (which may change during training)
         for k in model.__dict__.keys():
-            if not k.startswith('_') and not isinstance(getattr(model, k), 
-                (torch.distributed.ProcessGroupNCCL, torch.distributed.Reducer)):
+            if not k.startswith('_') and (k != 'module' or not isinstance(getattr(model, k), 
+                (torch.distributed.ProcessGroupNCCL, torch.distributed.Reducer))):
                 setattr(self.ema, k, getattr(model, k))

@@ -67,13 +67,8 @@ def train(hyp, tb_writer, opt, device):
     total_batch_size = opt.batch_size if opt.local_rank == -1 else opt.batch_size * torch.distributed.get_world_size() # 64
     weights = opt.weights  # initial training weights
 
-    if opt.local_rank in [-1, 0]:
-        # TODO: Init DDP logging. Only the first process is allowed to log.
-        # Since I see lots of print here, the logging is skipped here.
-        pass
-    else:
-        tb_writer = None
-
+    # TODO: Init DDP logging. Only the first process is allowed to log.
+    # Since I see lots of print here, the logging is skipped here.
 
     # Configure
     init_seeds(1)
@@ -84,13 +79,13 @@ def train(hyp, tb_writer, opt, device):
     nc = 1 if opt.single_cls else int(data_dict['nc'])  # number of classes
 
     # Remove previous results
-    for f in glob.glob('*_batch*.jpg') + glob.glob(results_file):
-        os.remove(f)
+    if opt.local_rank in [-1, 0]:
+        for f in glob.glob('*_batch*.jpg') + glob.glob(results_file):
+            os.remove(f)
 
     # Create model
     model = Model(opt.cfg).to(device)
     assert model.md['nc'] == nc, '%s nc=%g classes but %s nc=%g classes' % (opt.data, nc, opt.cfg, model.md['nc'])
-    model.names = data_dict['names']
 
     # Image sizes
     gs = int(max(model.stride))  # grid size (max stride)
@@ -138,7 +133,7 @@ def train(hyp, tb_writer, opt, device):
             model.load_state_dict(ckpt['model'], strict=False)
         except KeyError as e:
             s = "%s is not compatible with %s. This may be due to model differences or %s may be out of date. " \
-                "Please delete or update %s and try again, or use --weights '' to train from scatch." \
+                "Please delete or update %s and try again, or use --weights '' to train from scratch." \
                 % (opt.weights, opt.cfg, opt.weights, opt.weights)
             raise KeyError(s) from e
 
@@ -205,6 +200,7 @@ def train(hyp, tb_writer, opt, device):
     model.hyp = hyp  # attach hyperparameters to model
     model.gr = 1.0  # giou loss ratio (obj_loss = 1.0 or giou)
     model.class_weights = labels_to_class_weights(dataset.labels, nc).to(device)  # attach class weights
+    model.names = data_dict['names']
 
     # Class frequency
     if tb_writer:
@@ -326,10 +322,9 @@ def train(hyp, tb_writer, opt, device):
                                                  batch_size=total_batch_size,
                                                  imgsz=imgsz_test,
                                                  save_json=final_epoch and opt.data.endswith(os.sep + 'coco.yaml'),
-                                                 model=ema.ema,
+                                                 model=ema.ema.module if hasattr(ema.ema, 'module') else ema.ema,
                                                  single_cls=opt.single_cls,
                                                  dataloader=testloader)
-
                 # Write
                 with open(results_file, 'a') as f:
                     f.write(s + '%10.4g' * 7 % results + '\n')  # P, R, mAP, F1, test_losses=(GIoU, obj, cls)
@@ -368,22 +363,21 @@ def train(hyp, tb_writer, opt, device):
         # end epoch ----------------------------------------------------------------------------------------------------
     # end training
 
-    results = None
     if opt.local_rank in [-1, 0]:
-        n = opt.name
-        if len(n):
-            n = '_' + n if not n.isnumeric() else n
-            fresults, flast, fbest = 'results%s.txt' % n, wdir + 'last%s.pt' % n, wdir + 'best%s.pt' % n
-            for f1, f2 in zip([wdir + 'last.pt', wdir + 'best.pt', 'results.txt'], [flast, fbest, fresults]):
-                if os.path.exists(f1):
-                    os.rename(f1, f2)  # rename
-                    ispt = f2.endswith('.pt')  # is *.pt
-                    strip_optimizer(f2) if ispt else None  # strip optimizer
-                    os.system('gsutil cp %s gs://%s/weights' % (f2, opt.bucket)) if opt.bucket and ispt else None  # upload
+        # Strip optimizers
+        n = ('_' if len(opt.name) and not opt.name.isnumeric() else '') + opt.name
+        fresults, flast, fbest = 'results%s.txt' % n, wdir + 'last%s.pt' % n, wdir + 'best%s.pt' % n
+        for f1, f2 in zip([wdir + 'last.pt', wdir + 'best.pt', 'results.txt'], [flast, fbest, fresults]):
+            if os.path.exists(f1):
+                os.rename(f1, f2)  # rename
+                ispt = f2.endswith('.pt')  # is *.pt
+                strip_optimizer(f2) if ispt else None  # strip optimizer
+                os.system('gsutil cp %s gs://%s/weights' % (f2, opt.bucket)) if opt.bucket and ispt else None  # upload
+        # Finish
         if not opt.evolve:
             plot_results()  # save as results.png
         print('%g epochs completed in %.3f hours.\n' % (epoch - start_epoch + 1, (time.time() - t0) / 3600))
-        if opt.local_rank == -1:
+        if opt.local_rank == 0:
             dist.destroy_process_group()
     torch.cuda.empty_cache()
     return results
@@ -414,16 +408,16 @@ if __name__ == '__main__':
     # Parameter For DDP.
     parser.add_argument('--local_rank', type=int, default=-1, help="Extra parameter for DDP implementation. Don't use it manually.")
     opt = parser.parse_args()
-    opt.weights = last if opt.resume else opt.weights
+    opt.weights = last if opt.resume and not opt.weights else opt.weights
     opt.cfg = check_file(opt.cfg)  # check file
     opt.data = check_file(opt.data)  # check file
     print(opt)
     opt.img_size.extend([opt.img_size[-1]] * (2 - len(opt.img_size)))  # extend to 2 sizes (train, test)
-    # If local_rank is not -1, the DDP mode is triggered. Use local_rank to overwrite the opt.device config.
     device = torch_utils.select_device(opt.device, apex=mixed_precision, batch_size=opt.batch_size)
     if device.type == 'cpu':
         mixed_precision = False
     elif opt.local_rank != -1:
+        # DDP mode
         assert torch.cuda.device_count() > opt.local_rank
         torch.cuda.set_device(opt.local_rank)
         device = torch.device("cuda")
@@ -435,10 +429,10 @@ if __name__ == '__main__':
     # Train
     if not opt.evolve:
         if opt.local_rank in [-1, 0]:
+            print('Start Tensorboard with "tensorboard --logdir=runs", view at http://localhost:6006/')
             tb_writer = SummaryWriter(comment=opt.name)
         else:
             tb_writer = None
-        print('Start Tensorboard with "tensorboard --logdir=runs", view at http://localhost:6006/')
         train(hyp, tb_writer, opt, device)
 
     # Evolve hyperparameters (optional)
