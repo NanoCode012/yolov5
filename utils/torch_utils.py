@@ -2,6 +2,7 @@ import math
 import os
 import time
 from copy import deepcopy
+import pickle
 
 import torch
 import torch.backends.cudnn as cudnn
@@ -200,6 +201,12 @@ class ModelEMA:
     def update_attr(self, model):
         # Assign attributes (which may change during training)
         for k in model.__dict__.keys():
+            # TODO: This is uglyy. Custom attributes should have some specific naming strategy.
             if not (k.startswith('_') or k == 'module' or
                 isinstance(getattr(model, k), (torch.distributed.ProcessGroupNCCL, torch.distributed.Reducer))):
-                setattr(self.ema, k, getattr(model, k))
+                try:
+                    pickle.dumps(getattr(model, k))
+                except Exception:
+                    continue
+                else:
+                    setattr(self.ema, k, getattr(model, k))
