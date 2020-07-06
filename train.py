@@ -19,6 +19,7 @@ mixed_precision = True
 try:  # Mixed precision training https://github.com/NVIDIA/apex
     from apex import amp
 except:
+    #from apex.parallel import DistributedDataParallel as DDP
     print('Apex recommended for faster mixed precision training: https://github.com/NVIDIA/apex')
     mixed_precision = False  # not installed
 
@@ -120,7 +121,8 @@ def train(hyp, tb_writer, opt, device):
     del pg0, pg1, pg2
 
     # Load Model
-    if opt.local_rank in [-1, 0]:
+    # Avoid multiple downloads.
+    with torch_distributed_zero_first(opt.local_rank):
         google_utils.attempt_download(weights)
     start_epoch, best_fitness = 0, 0.0
     if weights.endswith('.pt'):  # pytorch format
@@ -274,6 +276,9 @@ def train(hyp, tb_writer, opt, device):
 
             # Loss
             loss, loss_items = compute_loss(pred, targets.to(device), model)
+            # loss is scaled with batch size in func compute_loss. But in DDP mode, gradient is averaged between devices.
+            if opt.local_rank != -1:
+                loss *= torch.distributed.get_world_size()
             if not torch.isfinite(loss):
                 print('WARNING: non-finite loss, ending training ', loss_items)
                 return results
@@ -293,9 +298,9 @@ def train(hyp, tb_writer, opt, device):
                     ema.update(model)
 
             # Print
-            mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
-
             if opt.local_rank in [-1, 0]:
+                # TODO: all_reduct mloss if in DDP mode.
+                mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
                 mem = '%.3gG' % (torch.cuda.memory_cached() / 1E9 if torch.cuda.is_available() else 0)  # (GB)
                 s = ('%10s' * 2 + '%10.4g' * 6) % (
                     '%g/%g' % (epoch, epochs - 1), mem, *mloss, targets.shape[0], imgs.shape[-1])
@@ -319,7 +324,7 @@ def train(hyp, tb_writer, opt, device):
             final_epoch = epoch + 1 == epochs
             if not opt.notest or final_epoch:  # Calculate mAP
                 results, maps, times = test.test(opt.data,
-                                                 batch_size=total_batch_size,
+                                                 batch_size=batch_size,
                                                  imgsz=imgsz_test,
                                                  save_json=final_epoch and opt.data.endswith(os.sep + 'coco.yaml'),
                                                  model=ema.ema.module if hasattr(ema.ema, 'module') else ema.ema,
@@ -377,8 +382,6 @@ def train(hyp, tb_writer, opt, device):
         if not opt.evolve:
             plot_results()  # save as results.png
         print('%g epochs completed in %.3f hours.\n' % (epoch - start_epoch + 1, (time.time() - t0) / 3600))
-        if opt.local_rank == 0:
-            dist.destroy_process_group()
     torch.cuda.empty_cache()
     return results
 

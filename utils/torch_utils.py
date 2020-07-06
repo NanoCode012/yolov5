@@ -200,6 +200,6 @@ class ModelEMA:
     def update_attr(self, model):
         # Assign attributes (which may change during training)
         for k in model.__dict__.keys():
-            if not k.startswith('_') and (k != 'module' or not isinstance(getattr(model, k), 
-                (torch.distributed.ProcessGroupNCCL, torch.distributed.Reducer))):
+            if not (k.startswith('_') or k == 'module' or
+                isinstance(getattr(model, k), (torch.distributed.ProcessGroupNCCL, torch.distributed.Reducer))):
                 setattr(self.ema, k, getattr(model, k))
