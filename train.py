@@ -315,7 +315,7 @@ def train(hyp, tb_writer, opt, device):
 
             # Print
             if opt.local_rank in [-1, 0]:
-                # TODO: all_reduct mloss if in DDP mode.
+                # TODO: all_reduce mloss if in DDP mode.
                 mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
                 mem = '%.3gG' % (torch.cuda.memory_cached() / 1E9 if torch.cuda.is_available() else 0)  # (GB)
                 s = ('%10s' * 2 + '%10.4g' * 6) % (
@@ -400,6 +400,7 @@ def train(hyp, tb_writer, opt, device):
         if not opt.evolve:
             plot_results()  # save as results.png
         print('%g epochs completed in %.3f hours.\n' % (epoch - start_epoch + 1, (time.time() - t0) / 3600))
+    dist.destroy_process_group() if device.type != 'cpu' and torch.cuda.device_count() > 1 else None
     torch.cuda.empty_cache()
     return results
 
