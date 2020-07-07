@@ -85,8 +85,7 @@ def train(hyp, tb_writer, opt, device):
             os.remove(f)
 
     # Create model
-    model = Model(opt.cfg).to(device)
-    assert model.md['nc'] == nc, '%s nc=%g classes but %s nc=%g classes' % (opt.data, nc, opt.cfg, model.md['nc'])
+    model = Model(opt.cfg, nc=data_dict['nc']).to(device)
 
     # Image sizes
     gs = int(max(model.stride))  # grid size (max stride)
@@ -117,6 +116,9 @@ def train(hyp, tb_writer, opt, device):
         optim.SGD(pg0, lr=hyp['lr0'], momentum=hyp['momentum'], nesterov=True)
     optimizer.add_param_group({'params': pg1, 'weight_decay': hyp['weight_decay']})  # add pg1 with weight_decay
     optimizer.add_param_group({'params': pg2})  # add pg2 (biases)
+    # Scheduler https://arxiv.org/pdf/1812.01187.pdf
+    lf = lambda x: (((1 + math.cos(x * math.pi / epochs)) / 2) ** 1.0) * 0.9 + 0.1  # cosine
+    scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lf)
     print('Optimizer groups: %g .bias, %g conv.weight, %g other' % (len(pg2), len(pg1), len(pg0)))
     del pg0, pg1, pg2
 
@@ -162,9 +164,7 @@ def train(hyp, tb_writer, opt, device):
     if mixed_precision:
         model, optimizer = amp.initialize(model, optimizer, opt_level='O1', verbosity=0)
 
-    # Scheduler https://arxiv.org/pdf/1812.01187.pdf
-    lf = lambda x: (((1 + math.cos(x * math.pi / epochs)) / 2) ** 1.0) * 0.9 + 0.1  # cosine
-    scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lf)
+
     scheduler.last_epoch = start_epoch - 1  # do not move
     # https://discuss.pytorch.org/t/a-problem-occured-when-resuming-an-optimizer/28822
     # plot_lr_scheduler(optimizer, scheduler, epochs)
@@ -382,7 +382,6 @@ def train(hyp, tb_writer, opt, device):
                 if (best_fitness == fi) and not final_epoch:
                     torch.save(ckpt, best)
                 del ckpt
-
         # end epoch ----------------------------------------------------------------------------------------------------
     # end training
 
