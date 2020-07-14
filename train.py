@@ -80,7 +80,7 @@ def train(hyp, tb_writer, opt, device):
     nc = 1 if opt.single_cls else int(data_dict['nc'])  # number of classes
 
     # Remove previous results
-    if opt.local_rank in [-1, 0]:
+    if local_rank in [-1, 0]:
         for f in glob.glob('*_batch*.jpg') + glob.glob(results_file):
             os.remove(f)
 
@@ -160,7 +160,6 @@ def train(hyp, tb_writer, opt, device):
     # Mixed precision training https://github.com/NVIDIA/apex
     if mixed_precision:
         model, optimizer = amp.initialize(model, optimizer, opt_level='O1', verbosity=0)
-
 
     # Scheduler https://arxiv.org/pdf/1812.01187.pdf
     lf = lambda x: (((1 + math.cos(x * math.pi / epochs)) / 2) ** 1.0) * 0.9 + 0.1  # cosine
@@ -405,7 +404,6 @@ def train(hyp, tb_writer, opt, device):
 
 
 if __name__ == '__main__':
-    check_git_status()
     parser = argparse.ArgumentParser()
     parser.add_argument('--epochs', type=int, default=300)
     parser.add_argument('--batch-size', type=int, default=16, help="batch size for all gpus.")
@@ -430,6 +428,8 @@ if __name__ == '__main__':
     parser.add_argument('--local_rank', type=int, default=-1, help="Extra parameter for DDP implementation. Don't use it manually.")
     opt = parser.parse_args()
     opt.weights = last if opt.resume and not opt.weights else opt.weights
+    with torch_distributed_zero_first(opt.local_rank):
+        check_git_status()
     opt.cfg = check_file(opt.cfg)  # check file
     opt.data = check_file(opt.data)  # check file
     opt.img_size.extend([opt.img_size[-1]] * (2 - len(opt.img_size)))  # extend to 2 sizes (train, test)
